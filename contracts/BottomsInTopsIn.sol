@@ -219,7 +219,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         IERC20(address(bottomToken)).forceApprove(thrusterRouter, amountA);
         IERC20(address(topToken)).forceApprove(thrusterRouter, amountB);
 
-        IThrusterRouter(thrusterRouter).addLiquidity(
+        (uint256 addedAmountA, uint256 addedAmountB, uint256 liquidity) = IThrusterRouter(thrusterRouter).addLiquidity(
             address(bottomToken),
             address(topToken),
             amountA,
@@ -229,6 +229,8 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             address(this),
             block.timestamp + 15 minutes
         );
+
+        emit LiquidityAdded(addedAmountA, addedAmountB, liquidity);
 
         // Revoke approvals
         IERC20(address(bottomToken)).forceApprove(thrusterRouter, 0);
