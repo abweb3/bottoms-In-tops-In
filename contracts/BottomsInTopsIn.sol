@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "@chainlink/contracts/";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
@@ -37,6 +38,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         Bottom,
         Top
     }
+
     Winner public lastEpochWinner;
 
     Checkpoints.Trace224 private _bottomTokenCheckpoints;
@@ -66,40 +68,29 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
     constructor(
         address _bottomToken,
         address _topToken,
-        address _thrusterRouter
-    ) Ownable(msg.sender) ReentrancyGuard() {
+        address _thrusterRouter,
+        address _bottomTokenPriceFeed,
+        address _topTokenPriceFeed
+    ) Ownable(msg.sender) {
         require(
             _bottomToken != address(0) &&
                 _topToken != address(0) &&
-                _thrusterRouter != address(0),
+                _thrusterRouter != address(0) &&
+                _bottomTokenPriceFeed != address(0) &&
+                _topTokenPriceFeed != address(0),
             "Invalid addresses"
         );
         bottomToken = IERC20(_bottomToken);
         topToken = IERC20(_topToken);
         thrusterRouter = _thrusterRouter;
+        bottomTokenPriceFeed = AggregatorV3Interface(_bottomTokenPriceFeed);
+        topTokenPriceFeed = AggregatorV3Interface(_topTokenPriceFeed);
         lastEpochTimestamp = block.timestamp;
-    }
+        lastMarketCap = 0;
 
-    function settleEpoch(uint256 currentMarketCap) external onlyOwner {
-        require(
-            block.timestamp >= lastEpochTimestamp + EPOCH_DURATION,
-            "Epoch not finished"
-        );
-
-        Winner winner;
-        if (currentMarketCap > lastMarketCap) {
-            winner = Winner.Top;
-        } else if (currentMarketCap < lastMarketCap) {
-            winner = Winner.Bottom;
-        } else {
-            winner = Winner.None;
-        }
-
-        _marketCapCheckpoints.push(
-            uint32(block.timestamp),
-            uint224(currentMarketCap)
-        );
-        uint32 epochId = uint32(_marketCapCheckpoints.length());
+        // Initialize first checkpoint
+        uint256 initialMarketCap = getCurrentMarketCap();
+        _marketCapCheckpoints.push(uint32(block.timestamp), uint224(0));
         _bottomTokenCheckpoints.push(
             uint32(block.timestamp),
             uint224(bottomToken.totalSupply())
@@ -109,11 +100,45 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             uint224(topToken.totalSupply())
         );
 
+        lastMarketCap = initialMarketCap;
+    }
+
+    function settleEpoch(uint256 currentMarketCap) external onlyOwner {
+        require(
+            block.timestamp >= lastEpochTimestamp + EPOCH_DURATION,
+            "Epoch not finished"
+        );
+
+        uint32 epochId = uint32(_marketCapCheckpoints.length() + 1);
+        _marketCapCheckpoints.push(
+            uint32(block.timestamp),
+            uint224(currentMarketCap)
+        );
+        _bottomTokenCheckpoints.push(
+            uint32(block.timestamp),
+            uint224(bottomToken.totalSupply())
+        );
+        _topTokenCheckpoints.push(
+            uint32(block.timestamp),
+            uint224(topToken.totalSupply())
+        );
+
+        Winner winner = getWinnerForEpoch(epochId);
         lastEpochWinner = winner;
         lastMarketCap = currentMarketCap;
         lastEpochTimestamp = block.timestamp;
 
         emit EpochSettled(epochId, currentMarketCap, winner);
+    }
+
+    function getBottomTokenPrice() public view returns (uint256) {
+        (, int256 price, , , ) = bottomTokenPriceFeed.latestRoundData();
+        return uint256(price);
+    }
+
+    function getTopTokenPrice() public view returns (uint256) {
+        (, int256 price, , , ) = topTokenPriceFeed.latestRoundData();
+        return uint256(price);
     }
 
     function distributeRewards(uint256 epochId) external onlyOwner {
@@ -122,19 +147,22 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             "Invalid epoch ID"
         );
         Winner winner = getWinnerForEpoch(epochId);
-        require(winner != Winner.None, "No winner for this epoch");
+
+        if (winner == Winner.None) {
+            emit RewardsDistributed(epochId, 0, Winner.None);
+            return;
+        }
 
         uint256 rewardAmount = address(this).balance;
         require(rewardAmount > 0, "No rewards to distribute");
 
         _epochRewards[epochId] = rewardAmount;
-
         emit RewardsDistributed(epochId, rewardAmount, winner);
     }
 
     function claimRewards(uint256 epochId) external nonReentrant {
         require(
-            epochId > 0 && epochId <= _marketCapCheckpoints.length(),
+            epochId > 0 && epochId < _marketCapCheckpoints.length(),
             "Invalid epoch ID"
         );
         require(
@@ -155,9 +183,9 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         uint256 totalSupply = uint256(
             winningCheckpoints.upperLookup(uint32(epochId))
         );
-
         uint256 rewardAmount = (_epochRewards[epochId] * userBalance) /
             totalSupply;
+
         require(rewardAmount > 0, "No rewards to claim");
 
         _hasClaimedReward[epochId][msg.sender] = true;
@@ -174,7 +202,8 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             epochId > 0 && epochId <= _marketCapCheckpoints.length(),
             "Invalid epoch ID"
         );
-        if (epochId == 1) return Winner.None;
+
+        if (_marketCapCheckpoints.length() <= 1) return Winner.None;
 
         uint256 currentMarketCap = _marketCapCheckpoints.upperLookup(
             uint32(epochId)
@@ -193,7 +222,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
     }
 
     function getCurrentEpoch() public view returns (uint256) {
-        return _marketCapCheckpoints.length();
+        return _marketCapCheckpoints.length() - 1;
     }
 
     function getTokenSupplyAtEpoch(
@@ -210,6 +239,15 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
                 : uint256(_topTokenCheckpoints.upperLookup(uint32(epochId)));
     }
 
+    function getCurrentMarketCap() public view returns (uint256) {
+        uint256 bottomSupply = bottomToken.totalSupply();
+        uint256 topSupply = topToken.totalSupply();
+        uint256 bottomPrice = getBottomTokenPrice();
+        uint256 topPrice = getTopTokenPrice();
+
+        return (bottomSupply * bottomPrice) + (topSupply * topPrice);
+    }
+
     function addLiquidityToThruster(
         uint256 amountA,
         uint256 amountB
@@ -219,16 +257,20 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         IERC20(address(bottomToken)).forceApprove(thrusterRouter, amountA);
         IERC20(address(topToken)).forceApprove(thrusterRouter, amountB);
 
-        (uint256 addedAmountA, uint256 addedAmountB, uint256 liquidity) = IThrusterRouter(thrusterRouter).addLiquidity(
-            address(bottomToken),
-            address(topToken),
-            amountA,
-            amountB,
-            (amountA * 95) / 100, // 5% slippage tolerance
-            (amountB * 95) / 100, // 5% slippage tolerance
-            address(this),
-            block.timestamp + 15 minutes
-        );
+        (
+            uint256 addedAmountA,
+            uint256 addedAmountB,
+            uint256 liquidity
+        ) = IThrusterRouter(thrusterRouter).addLiquidity(
+                address(bottomToken),
+                address(topToken),
+                amountA,
+                amountB,
+                (amountA * 95) / 100, // 5% slippage tolerance
+                (amountB * 95) / 100, // 5% slippage tolerance
+                address(this),
+                block.timestamp + 15 minutes
+            );
 
         emit LiquidityAdded(addedAmountA, addedAmountB, liquidity);
 

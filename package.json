@@ -24,5 +24,8 @@
     "hardhat": "^2.22.6",
     "hardhat-deploy": "^0.12.4",
     "hardhat-deploy-ethers": "^0.4.2"
+  },
+  "dependencies": {
+    "@chainlink/contracts": "^1.1.1"
   }
 }
