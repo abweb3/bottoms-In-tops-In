@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 interface IThrusterRouter {
     function addLiquidity(
@@ -28,6 +28,8 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
     IERC20 public immutable bottomToken;
     IERC20 public immutable topToken;
     address public immutable thrusterRouter;
+    AggregatorV3Interface public immutable bottomTokenPriceFeed;
+    AggregatorV3Interface public immutable topTokenPriceFeed;
 
     uint256 public constant EPOCH_DURATION = 7 days;
     uint256 public lastEpochTimestamp;
@@ -90,7 +92,10 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
 
         // Initialize first checkpoint
         uint256 initialMarketCap = getCurrentMarketCap();
-        _marketCapCheckpoints.push(uint32(block.timestamp), uint224(0));
+        _marketCapCheckpoints.push(
+            uint32(block.timestamp),
+            uint224(initialMarketCap)
+        );
         _bottomTokenCheckpoints.push(
             uint32(block.timestamp),
             uint224(bottomToken.totalSupply())
@@ -99,7 +104,6 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             uint32(block.timestamp),
             uint224(topToken.totalSupply())
         );
-
         lastMarketCap = initialMarketCap;
     }
 
@@ -109,7 +113,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             "Epoch not finished"
         );
 
-        uint32 epochId = uint32(_marketCapCheckpoints.length() + 1);
+        uint32 epochId = uint32(_marketCapCheckpoints.length());
         _marketCapCheckpoints.push(
             uint32(block.timestamp),
             uint224(currentMarketCap)
@@ -131,27 +135,12 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         emit EpochSettled(epochId, currentMarketCap, winner);
     }
 
-    function getBottomTokenPrice() public view returns (uint256) {
-        (, int256 price, , , ) = bottomTokenPriceFeed.latestRoundData();
-        return uint256(price);
-    }
-
-    function getTopTokenPrice() public view returns (uint256) {
-        (, int256 price, , , ) = topTokenPriceFeed.latestRoundData();
-        return uint256(price);
-    }
-
     function distributeRewards(uint256 epochId) external onlyOwner {
         require(
             epochId > 0 && epochId <= _marketCapCheckpoints.length(),
             "Invalid epoch ID"
         );
         Winner winner = getWinnerForEpoch(epochId);
-
-        if (winner == Winner.None) {
-            emit RewardsDistributed(epochId, 0, Winner.None);
-            return;
-        }
 
         uint256 rewardAmount = address(this).balance;
         require(rewardAmount > 0, "No rewards to distribute");
@@ -162,7 +151,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
 
     function claimRewards(uint256 epochId) external nonReentrant {
         require(
-            epochId > 0 && epochId < _marketCapCheckpoints.length(),
+            epochId > 0 && epochId <= _marketCapCheckpoints.length(),
             "Invalid epoch ID"
         );
         require(
@@ -174,15 +163,8 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         require(winner != Winner.None, "No winner for this epoch");
 
         IERC20 winningToken = winner == Winner.Bottom ? bottomToken : topToken;
-        Checkpoints.Trace224 storage winningCheckpoints = winner ==
-            Winner.Bottom
-            ? _bottomTokenCheckpoints
-            : _topTokenCheckpoints;
-
         uint256 userBalance = winningToken.balanceOf(msg.sender);
-        uint256 totalSupply = uint256(
-            winningCheckpoints.upperLookup(uint32(epochId))
-        );
+        uint256 totalSupply = winningToken.totalSupply();
         uint256 rewardAmount = (_epochRewards[epochId] * userBalance) /
             totalSupply;
 
@@ -203,7 +185,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             "Invalid epoch ID"
         );
 
-        if (_marketCapCheckpoints.length() <= 1) return Winner.None;
+        if (epochId == 1) return Winner.None;
 
         uint256 currentMarketCap = _marketCapCheckpoints.upperLookup(
             uint32(epochId)
@@ -212,12 +194,10 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             uint32(epochId - 1)
         );
 
-        if (currentMarketCap > previousMarketCap) {
+        if (currentMarketCap >= previousMarketCap) {
             return Winner.Top;
-        } else if (currentMarketCap < previousMarketCap) {
-            return Winner.Bottom;
         } else {
-            return Winner.None;
+            return Winner.Bottom;
         }
     }
 
@@ -239,13 +219,26 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
                 : uint256(_topTokenCheckpoints.upperLookup(uint32(epochId)));
     }
 
+    function getBottomTokenPrice() public view returns (uint256) {
+        (, int256 price, , , ) = bottomTokenPriceFeed.latestRoundData();
+        return uint256(price);
+    }
+
+    function getTopTokenPrice() public view returns (uint256) {
+        (, int256 price, , , ) = topTokenPriceFeed.latestRoundData();
+        return uint256(price);
+    }
+
     function getCurrentMarketCap() public view returns (uint256) {
         uint256 bottomSupply = bottomToken.totalSupply();
         uint256 topSupply = topToken.totalSupply();
         uint256 bottomPrice = getBottomTokenPrice();
         uint256 topPrice = getTopTokenPrice();
 
-        return (bottomSupply * bottomPrice) + (topSupply * topPrice);
+        uint256 bottomMarketCap = bottomSupply * bottomPrice;
+        uint256 topMarketCap = topSupply * topPrice;
+
+        return bottomMarketCap + topMarketCap;
     }
 
     function addLiquidityToThruster(

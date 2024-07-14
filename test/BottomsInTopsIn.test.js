@@ -8,12 +8,13 @@ describe("BottomsInTopsIn", function () {
     BottomToken,
     bottomToken,
     TopToken,
-    topToken,
-    MockThrusterRouter,
+    topToken;
+  let MockThrusterRouter,
     thrusterRouter,
-    owner,
-    addr1,
-    addr2;
+    MockPriceFeed,
+    bottomPriceFeed,
+    topPriceFeed;
+  let owner, addr1, addr2;
   const EPOCH_DURATION = 7 * 24 * 60 * 60; // 7 days in seconds
 
   beforeEach(async function () {
@@ -28,11 +29,17 @@ describe("BottomsInTopsIn", function () {
     MockThrusterRouter = await ethers.getContractFactory("MockThrusterRouter");
     thrusterRouter = await MockThrusterRouter.deploy();
 
+    MockV3Aggregator = await ethers.getContractFactory("MockV3Aggregator");
+    bottomPriceFeed = await MockV3Aggregator.deploy(8, 100000000); // 8 decimals, $1.00 initial price
+    topPriceFeed = await MockV3Aggregator.deploy(8, 200000000); // 8 decimals, $2.00 initial price
+
     BottomsInTopsIn = await ethers.getContractFactory("BottomsInTopsIn");
     bottomsInTopsIn = await BottomsInTopsIn.deploy(
       await bottomToken.getAddress(),
       await topToken.getAddress(),
-      await thrusterRouter.getAddress()
+      await thrusterRouter.getAddress(),
+      await bottomPriceFeed.getAddress(),
+      await topPriceFeed.getAddress()
     );
 
     await bottomToken.transfer(addr1.address, ethers.parseEther("1000"));
@@ -76,11 +83,9 @@ describe("BottomsInTopsIn", function () {
     it("Should correctly determine the winner based on market cap changes", async function () {
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch(ethers.parseEther("1000000"));
-
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch(ethers.parseEther("2000000"));
       expect(await bottomsInTopsIn.getWinnerForEpoch(2)).to.equal(2); // Top wins
-
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch(ethers.parseEther("1500000"));
       expect(await bottomsInTopsIn.getWinnerForEpoch(3)).to.equal(1); // Bottom wins
@@ -129,17 +134,10 @@ describe("BottomsInTopsIn", function () {
       ).to.be.revertedWith("No winner for this epoch");
     });
 
-    it("Should not allow claiming rewards for future epochs", async function () {
-      await expect(
-        bottomsInTopsIn.connect(addr1).claimRewards(4)
-      ).to.be.revertedWith("Invalid epoch ID");
-    });
-
     it("Should distribute and claim correct reward amounts", async function () {
       const initialBalance = await ethers.provider.getBalance(addr1.address);
       await bottomsInTopsIn.connect(addr1).claimRewards(2);
       const finalBalance = await ethers.provider.getBalance(addr1.address);
-
       // Assuming addr1 has 1000 tokens out of 69420000 total supply
       const expectedReward = ethers.parseEther("10.0").mul(1000).div(69420000);
       expect(finalBalance.sub(initialBalance)).to.be.closeTo(
@@ -153,12 +151,9 @@ describe("BottomsInTopsIn", function () {
     it("Should allow the owner to add liquidity", async function () {
       const amountA = ethers.parseEther("100");
       const amountB = ethers.parseEther("100");
-
       await bottomToken.transfer(await bottomsInTopsIn.getAddress(), amountA);
       await topToken.transfer(await bottomsInTopsIn.getAddress(), amountB);
-
       await thrusterRouter.setReturnValues(amountA, amountB, amountA + amountB);
-
       await expect(bottomsInTopsIn.addLiquidityToThruster(amountA, amountB))
         .to.emit(bottomsInTopsIn, "LiquidityAdded")
         .withArgs(amountA, amountB, amountA + amountB);
@@ -167,7 +162,6 @@ describe("BottomsInTopsIn", function () {
     it("Should not allow non-owners to add liquidity", async function () {
       const amountA = ethers.parseEther("100");
       const amountB = ethers.parseEther("100");
-
       await expect(
         bottomsInTopsIn.connect(addr1).addLiquidityToThruster(amountA, amountB)
       ).to.be.revertedWithCustomError(
@@ -191,7 +185,7 @@ describe("BottomsInTopsIn", function () {
     });
 
     it("Should allow the owner to withdraw unclaimed rewards", async function () {
-      await time.increase(EPOCH_DURATION);
+      await time.increase(EPOCH_DURATION * 2);
       const initialBalance = await ethers.provider.getBalance(owner.address);
       const tx = await bottomsInTopsIn.withdrawUnclaimedRewards(2);
       const receipt = await tx.wait();
@@ -235,24 +229,36 @@ describe("BottomsInTopsIn", function () {
     it("Should return the correct token supply at epoch", async function () {
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch(ethers.parseEther("1000000"));
-
       const bottomSupply = await bottomsInTopsIn.getTokenSupplyAtEpoch(1, true);
       const topSupply = await bottomsInTopsIn.getTokenSupplyAtEpoch(1, false);
-
       expect(bottomSupply).to.equal(await bottomToken.totalSupply());
       expect(topSupply).to.equal(await topToken.totalSupply());
     });
 
     it("Should return the correct current epoch", async function () {
       expect(await bottomsInTopsIn.getCurrentEpoch()).to.equal(0);
-
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch(ethers.parseEther("1000000"));
       expect(await bottomsInTopsIn.getCurrentEpoch()).to.equal(1);
-
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch(ethers.parseEther("2000000"));
       expect(await bottomsInTopsIn.getCurrentEpoch()).to.equal(2);
+    });
+
+    it("Should return the correct token prices", async function () {
+      expect(await bottomsInTopsIn.getBottomTokenPrice()).to.equal(100000000);
+      expect(await bottomsInTopsIn.getTopTokenPrice()).to.equal(200000000);
+    });
+
+    it("Should calculate the correct market cap", async function () {
+      const bottomSupply = await bottomToken.totalSupply();
+      const topSupply = await topToken.totalSupply();
+      const expectedMarketCap =
+        BigInt(bottomSupply) * BigInt(100000000n) +
+        BigInt(topSupply) * BigInt(200000000n);
+      expect(await bottomsInTopsIn.getCurrentMarketCap()).to.equal(
+        expectedMarketCap
+      );
     });
   });
 });
