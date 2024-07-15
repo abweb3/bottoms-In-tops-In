@@ -41,4 +41,4 @@ The project includes a comprehensive test suite.
 
 ## Clean
 
-Make sure to Run `npx hardhat clean` each time to make edits to the smart contract. 
+Make sure to Run `npx hardhat clean` each time to make edits to the smart contract.
