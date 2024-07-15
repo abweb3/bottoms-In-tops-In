@@ -64,9 +64,10 @@ describe("BottomsInTopsIn", function () {
   describe("Epoch Management", function () {
     it("Should allow the owner to settle an epoch after EPOCH_DURATION", async function () {
       await time.increase(EPOCH_DURATION);
+      const currentMarketCap = await bottomsInTopsIn.getCurrentMarketCap();
       await expect(bottomsInTopsIn.settleEpoch())
         .to.emit(bottomsInTopsIn, "EpochSettled")
-        .withArgs(2, await bottomsInTopsIn.getCurrentMarketCap(), 2); // 2 for Winner.Top
+        .withArgs(1, currentMarketCap, 2); // 2 for Winner.Top
     });
 
     it("Should not allow non-owners to settle an epoch", async function () {
@@ -82,10 +83,22 @@ describe("BottomsInTopsIn", function () {
     it("Should correctly determine the winner based on market cap changes", async function () {
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch();
+
+      // Increase bottom token price to make it win
+      await bottomPriceFeed.updateAnswer(250000000); // $2.50
+
       await time.increase(EPOCH_DURATION);
-      await bottomPriceFeed.updateAnswer(150000000); // Increase bottom token price
       await bottomsInTopsIn.settleEpoch();
-      expect(await bottomsInTopsIn.getWinnerForEpoch(2)).to.equal(1); // 1 for Winner.Bottom
+
+      expect(await bottomsInTopsIn.getWinnerForEpoch(2)).to.equal(1); // Winner.Bottom
+
+      // Increase top token price to make it win
+      await topPriceFeed.updateAnswer(300000000); // $3.00
+
+      await time.increase(EPOCH_DURATION);
+      await bottomsInTopsIn.settleEpoch();
+
+      expect(await bottomsInTopsIn.getWinnerForEpoch(3)).to.equal(2); // Winner.Top
     });
   });
 

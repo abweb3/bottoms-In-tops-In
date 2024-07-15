@@ -105,20 +105,31 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         );
     }
 
-    function settleEpoch(uint256 currentTotalMarketCap) external onlyOwner {
+    function settleEpoch() external onlyOwner {
         require(
             block.timestamp >= lastEpochTimestamp + EPOCH_DURATION,
             "Epoch not finished"
         );
-        uint32 epochId = uint32(_marketCapCheckpoints.length() + 1);
+
+        uint256 currentTotalMarketCap = getCurrentMarketCap();
+        uint32 epochId = uint32(_marketCapCheckpoints.length());
+
         _marketCapCheckpoints.push(
             uint32(block.timestamp),
             uint224(currentTotalMarketCap)
         );
-        Winner winner = epochId == 1 ? Winner.Top : getWinnerForEpoch(epochId);
+
+        Winner winner;
+        if (epochId == 1) {
+            winner = Winner.Top; // First epoch always returns Top
+        } else {
+            winner = getWinnerForEpoch(epochId);
+        }
+
         lastEpochWinner = winner;
         lastMarketCap = currentTotalMarketCap;
         lastEpochTimestamp = block.timestamp;
+
         emit EpochSettled(epochId, currentTotalMarketCap, winner);
     }
 
@@ -173,12 +184,14 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             "Invalid epoch ID"
         );
         if (epochId == 1) return Winner.Top; // First epoch always returns Top
+
         uint256 currentMarketCap = _marketCapCheckpoints.upperLookup(
             uint32(epochId)
         );
         uint256 previousMarketCap = _marketCapCheckpoints.upperLookup(
             uint32(epochId - 1)
         );
+
         if (currentMarketCap > previousMarketCap) {
             return Winner.Top;
         } else if (currentMarketCap < previousMarketCap) {
