@@ -40,7 +40,6 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         Bottom,
         Top
     }
-
     Winner public lastEpochWinner;
 
     Checkpoints.Trace224 private _bottomTokenCheckpoints;
@@ -82,19 +81,19 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
                 _topTokenPriceFeed != address(0),
             "Invalid addresses"
         );
+
         bottomToken = IERC20(_bottomToken);
         topToken = IERC20(_topToken);
         thrusterRouter = _thrusterRouter;
         bottomTokenPriceFeed = AggregatorV3Interface(_bottomTokenPriceFeed);
         topTokenPriceFeed = AggregatorV3Interface(_topTokenPriceFeed);
-        lastEpochTimestamp = block.timestamp;
-        lastMarketCap = 0;
 
-        // Initialize first checkpoint
-        uint256 initialMarketCap = getCurrentMarketCap();
+        lastEpochTimestamp = block.timestamp;
+        lastMarketCap = getCurrentMarketCap();
+
         _marketCapCheckpoints.push(
             uint32(block.timestamp),
-            uint224(initialMarketCap)
+            uint224(lastMarketCap)
         );
         _bottomTokenCheckpoints.push(
             uint32(block.timestamp),
@@ -104,35 +103,28 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             uint32(block.timestamp),
             uint224(topToken.totalSupply())
         );
-        lastMarketCap = initialMarketCap;
     }
 
-    function settleEpoch(uint256 currentMarketCap) external onlyOwner {
+    function settleEpoch() external onlyOwner {
         require(
             block.timestamp >= lastEpochTimestamp + EPOCH_DURATION,
             "Epoch not finished"
         );
 
-        uint32 epochId = uint32(_marketCapCheckpoints.length());
+        uint256 currentTotalMarketCap = getCurrentMarketCap();
+        uint32 epochId = uint32(_marketCapCheckpoints.length() + 1);
+
         _marketCapCheckpoints.push(
             uint32(block.timestamp),
-            uint224(currentMarketCap)
+            uint224(currentTotalMarketCap)
         );
-        _bottomTokenCheckpoints.push(
-            uint32(block.timestamp),
-            uint224(bottomToken.totalSupply())
-        );
-        _topTokenCheckpoints.push(
-            uint32(block.timestamp),
-            uint224(topToken.totalSupply())
-        );
+        Winner winner = epochId == 1 ? Winner.Top : getWinnerForEpoch(epochId);
 
-        Winner winner = getWinnerForEpoch(epochId);
         lastEpochWinner = winner;
-        lastMarketCap = currentMarketCap;
+        lastMarketCap = currentTotalMarketCap;
         lastEpochTimestamp = block.timestamp;
 
-        emit EpochSettled(epochId, currentMarketCap, winner);
+        emit EpochSettled(epochId, currentTotalMarketCap, winner);
     }
 
     function distributeRewards(uint256 epochId) external onlyOwner {
@@ -141,6 +133,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             "Invalid epoch ID"
         );
         Winner winner = getWinnerForEpoch(epochId);
+        require(winner != Winner.None, "No winner for this epoch");
 
         uint256 rewardAmount = address(this).balance;
         require(rewardAmount > 0, "No rewards to distribute");
@@ -184,8 +177,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             epochId > 0 && epochId <= _marketCapCheckpoints.length(),
             "Invalid epoch ID"
         );
-
-        if (epochId == 1) return Winner.None;
+        if (epochId == 1) return Winner.Top; // First epoch always returns Top
 
         uint256 currentMarketCap = _marketCapCheckpoints.upperLookup(
             uint32(epochId)
@@ -194,15 +186,17 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
             uint32(epochId - 1)
         );
 
-        if (currentMarketCap >= previousMarketCap) {
+        if (currentMarketCap > previousMarketCap) {
             return Winner.Top;
-        } else {
+        } else if (currentMarketCap < previousMarketCap) {
             return Winner.Bottom;
+        } else {
+            return Winner.None;
         }
     }
 
     function getCurrentEpoch() public view returns (uint256) {
-        return _marketCapCheckpoints.length() - 1;
+        return _marketCapCheckpoints.length();
     }
 
     function getTokenSupplyAtEpoch(
@@ -234,11 +228,7 @@ contract BottomsInTopsIn is Ownable, ReentrancyGuard {
         uint256 topSupply = topToken.totalSupply();
         uint256 bottomPrice = getBottomTokenPrice();
         uint256 topPrice = getTopTokenPrice();
-
-        uint256 bottomMarketCap = bottomSupply * bottomPrice;
-        uint256 topMarketCap = topSupply * topPrice;
-
-        return bottomMarketCap + topMarketCap;
+        return (bottomSupply * bottomPrice) + (topSupply * topPrice);
     }
 
     function addLiquidityToThruster(
