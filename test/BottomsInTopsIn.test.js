@@ -56,13 +56,18 @@ describe("BottomsInTopsIn", function () {
       expect(await bottomsInTopsIn.topToken()).to.equal(
         await topToken.getAddress()
       );
-      expect(await bottomsInTopsIn.owner()).to.equal(owner.address);
+      expect(
+        await bottomsInTopsIn.hasRole(
+          await bottomsInTopsIn.DEFAULT_ADMIN_ROLE(),
+          owner.address
+        )
+      ).to.be.true;
       expect(await bottomsInTopsIn.getCurrentEpoch()).to.equal(1);
     });
   });
 
   describe("Epoch Management", function () {
-    it("Should allow the owner to settle an epoch after EPOCH_DURATION", async function () {
+    it("Should allow the operator to settle an epoch after EPOCH_DURATION", async function () {
       await time.increase(EPOCH_DURATION);
       const currentMarketCap = await bottomsInTopsIn.getCurrentMarketCap();
       await expect(bottomsInTopsIn.settleEpoch())
@@ -70,14 +75,11 @@ describe("BottomsInTopsIn", function () {
         .withArgs(1, currentMarketCap, 2); // 2 for Winner.Top
     });
 
-    it("Should not allow non-owners to settle an epoch", async function () {
+    it("Should not allow non-operators to settle an epoch", async function () {
       await time.increase(EPOCH_DURATION);
       await expect(
         bottomsInTopsIn.connect(addr1).settleEpoch()
-      ).to.be.revertedWithCustomError(
-        bottomsInTopsIn,
-        "OwnableUnauthorizedAccount"
-      );
+      ).to.be.revertedWithCustomError(bottomsInTopsIn, "NotOperator");
     });
 
     it("Should correctly determine the winner based on market cap changes", async function () {
@@ -86,18 +88,14 @@ describe("BottomsInTopsIn", function () {
 
       // Increase bottom token price to make it win
       await bottomPriceFeed.updateAnswer(250000000); // $2.50
-
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch();
-
       expect(await bottomsInTopsIn.getWinnerForEpoch(2)).to.equal(1); // Winner.Bottom
 
       // Increase top token price to make it win
       await topPriceFeed.updateAnswer(300000000); // $3.00
-
       await time.increase(EPOCH_DURATION);
       await bottomsInTopsIn.settleEpoch();
-
       expect(await bottomsInTopsIn.getWinnerForEpoch(3)).to.equal(2); // Winner.Top
     });
   });
@@ -135,7 +133,7 @@ describe("BottomsInTopsIn", function () {
   });
 
   describe("Liquidity Management", function () {
-    it("Should allow the owner to add liquidity", async function () {
+    it("Should allow the operator to add liquidity", async function () {
       const amountA = ethers.parseEther("100");
       const amountB = ethers.parseEther("100");
       await bottomToken.transfer(await bottomsInTopsIn.getAddress(), amountA);
@@ -145,15 +143,12 @@ describe("BottomsInTopsIn", function () {
       ).to.emit(bottomsInTopsIn, "LiquidityAdded");
     });
 
-    it("Should not allow non-owners to add liquidity", async function () {
+    it("Should not allow non-operators to add liquidity", async function () {
       const amountA = ethers.parseEther("100");
       const amountB = ethers.parseEther("100");
       await expect(
         bottomsInTopsIn.connect(addr1).addLiquidityToThruster(amountA, amountB)
-      ).to.be.revertedWithCustomError(
-        bottomsInTopsIn,
-        "OwnableUnauthorizedAccount"
-      );
+      ).to.be.revertedWithCustomError(bottomsInTopsIn, "NotOperator");
     });
   });
 
@@ -168,7 +163,7 @@ describe("BottomsInTopsIn", function () {
       await bottomsInTopsIn.distributeRewards(1);
     });
 
-    it("Should allow the owner to withdraw unclaimed rewards", async function () {
+    it("Should allow the operator to withdraw unclaimed rewards", async function () {
       await time.increase(EPOCH_DURATION);
       const initialBalance = await ethers.provider.getBalance(owner.address);
       await bottomsInTopsIn.withdrawUnclaimedRewards(1);
@@ -176,13 +171,10 @@ describe("BottomsInTopsIn", function () {
       expect(finalBalance).to.be.gt(initialBalance);
     });
 
-    it("Should not allow non-owners to withdraw unclaimed rewards", async function () {
+    it("Should not allow non-operators to withdraw unclaimed rewards", async function () {
       await expect(
         bottomsInTopsIn.connect(addr1).withdrawUnclaimedRewards(1)
-      ).to.be.revertedWithCustomError(
-        bottomsInTopsIn,
-        "OwnableUnauthorizedAccount"
-      );
+      ).to.be.revertedWithCustomError(bottomsInTopsIn, "NotOperator");
     });
 
     it("Should not allow withdrawing from invalid epoch", async function () {
@@ -216,10 +208,74 @@ describe("BottomsInTopsIn", function () {
       const bottomSupply = await bottomToken.totalSupply();
       const topSupply = await topToken.totalSupply();
       const expectedMarketCap =
-        BigInt(bottomSupply) * BigInt(100000000) +
-        BigInt(topSupply) * BigInt(200000000);
+        (BigInt(bottomSupply) * BigInt(100000000) +
+          BigInt(topSupply) * BigInt(200000000)) /
+        BigInt(1e8);
       expect(await bottomsInTopsIn.getCurrentMarketCap()).to.equal(
         expectedMarketCap
+      );
+    });
+  });
+
+  describe("Access Control", function () {
+    it("Should allow the admin to grant and revoke roles", async function () {
+      await bottomsInTopsIn.grantRole(
+        await bottomsInTopsIn.OPERATOR_ROLE(),
+        addr1.address
+      );
+      expect(
+        await bottomsInTopsIn.hasRole(
+          await bottomsInTopsIn.OPERATOR_ROLE(),
+          addr1.address
+        )
+      ).to.be.true;
+
+      await bottomsInTopsIn.revokeRole(
+        await bottomsInTopsIn.OPERATOR_ROLE(),
+        addr1.address
+      );
+      expect(
+        await bottomsInTopsIn.hasRole(
+          await bottomsInTopsIn.OPERATOR_ROLE(),
+          addr1.address
+        )
+      ).to.be.false;
+    });
+
+    it("Should not allow non-admins to grant roles", async function () {
+      await expect(
+        bottomsInTopsIn
+          .connect(addr1)
+          .grantRole(await bottomsInTopsIn.OPERATOR_ROLE(), addr2.address)
+      ).to.be.revertedWithCustomError(bottomsInTopsIn, "NotAdmin");
+    });
+  });
+
+  describe("Pausability", function () {
+    it("Should allow the admin to pause and unpause the contract", async function () {
+      await bottomsInTopsIn.pause();
+      expect(await bottomsInTopsIn.paused()).to.be.true;
+
+      await bottomsInTopsIn.unpause();
+      expect(await bottomsInTopsIn.paused()).to.be.false;
+    });
+
+    it("Should not allow non-admins to pause or unpause", async function () {
+      await expect(
+        bottomsInTopsIn.connect(addr1).pause()
+      ).to.be.revertedWithCustomError(bottomsInTopsIn, "NotAdmin");
+      await expect(
+        bottomsInTopsIn.connect(addr1).unpause()
+      ).to.be.revertedWithCustomError(bottomsInTopsIn, "NotAdmin");
+    });
+
+    it("Should prevent certain operations when paused", async function () {
+      await bottomsInTopsIn.pause();
+      await expect(bottomsInTopsIn.settleEpoch()).to.be.revertedWith(
+        "Pausable: paused"
+      );
+      await expect(bottomsInTopsIn.claimRewards(1)).to.be.revertedWith(
+        "Pausable: paused"
       );
     });
   });
