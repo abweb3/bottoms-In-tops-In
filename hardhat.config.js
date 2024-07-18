@@ -8,7 +8,7 @@ module.exports = {
   solidity: "0.8.20",
   networks: {
     blast: {
-      url: process.env.BLAST_RPC_URL || "https://rpc.blast.io",
+      url: process.env.BLAST_RPC_URL || "https://blastl2-sepolia.public.blastapi.io",
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     }
   },

@@ -22,36 +22,39 @@ async function main() {
   const bottomsInTopsIn = await BottomsInTopsIn.deploy(
     bottomToken.address,
     topToken.address,
-    deployer.address
+    deployer.address // Ensure these are the correct arguments
   );
   await bottomsInTopsIn.deployed();
   console.log("BottomsInTopsIn deployed to:", bottomsInTopsIn.address);
 
   // Verify contracts on BlastScan
   console.log("Verifying contracts...");
-  await run("verify:verify", {
-    address: bottomToken.address,
-    constructorArguments: [deployer.address],
-  });
-  await run("verify:verify", {
-    address: topToken.address,
-    constructorArguments: [deployer.address],
-  });
-  await run("verify:verify", {
-    address: bottomsInTopsIn.address,
-    constructorArguments: [
-      bottomToken.address,
-      topToken.address,
-      deployer.address,
-    ],
-  });
-
-  console.log("Contracts verified!");
+  try {
+    await run("verify:verify", {
+      address: bottomToken.address,
+      constructorArguments: [deployer.address],
+    });
+    await run("verify:verify", {
+      address: topToken.address,
+      constructorArguments: [deployer.address],
+    });
+    await run("verify:verify", {
+      address: bottomsInTopsIn.address,
+      constructorArguments: [
+        bottomToken.address,
+        topToken.address,
+        deployer.address,
+      ],
+    });
+    console.log("Contracts verified!");
+  } catch (error) {
+    console.error("Verification failed:", error);
+  }
 }
 
 main()
   .then(() => process.exit(0))
   .catch((error) => {
-    console.error(error);
+    console.error("Deployment failed:", error);
     process.exit(1);
   });
