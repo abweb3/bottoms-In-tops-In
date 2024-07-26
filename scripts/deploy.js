@@ -1,8 +1,7 @@
-const { ethers, run } = require("hardhat");
+const { ethers } = require("hardhat");
 
 async function main() {
   const [deployer] = await ethers.getSigners();
-
   console.log("Deploying contracts with the account:", deployer.address);
 
   // Deploy BottomToken
@@ -22,34 +21,14 @@ async function main() {
   const bottomsInTopsIn = await BottomsInTopsIn.deploy(
     bottomToken.address,
     topToken.address,
-    deployer.address // Ensure these are the correct arguments
+    "THRUSTER_ROUTER_ADDRESS", // Replace with actual address
+    "BOTTOM_TOKEN_PRICE_FEED_ADDRESS", // Replace with actual address
+    "TOP_TOKEN_PRICE_FEED_ADDRESS" // Replace with actual address
   );
   await bottomsInTopsIn.deployed();
   console.log("BottomsInTopsIn deployed to:", bottomsInTopsIn.address);
 
-  // Verify contracts on BlastScan
-  console.log("Verifying contracts...");
-  try {
-    await run("verify:verify", {
-      address: bottomToken.address,
-      constructorArguments: [deployer.address],
-    });
-    await run("verify:verify", {
-      address: topToken.address,
-      constructorArguments: [deployer.address],
-    });
-    await run("verify:verify", {
-      address: bottomsInTopsIn.address,
-      constructorArguments: [
-        bottomToken.address,
-        topToken.address,
-        deployer.address,
-      ],
-    });
-    console.log("Contracts verified!");
-  } catch (error) {
-    console.error("Verification failed:", error);
-  }
+  console.log("Deployment completed successfully");
 }
 
 main()

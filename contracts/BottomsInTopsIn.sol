@@ -34,7 +34,7 @@ contract BottomsInTopsIn is AccessControl, ReentrancyGuard, Pausable {
     AggregatorV3Interface public immutable bottomTokenPriceFeed;
     AggregatorV3Interface public immutable topTokenPriceFeed;
 
-    uint256 public constant EPOCH_DURATION = 7 days;
+    uint256 public constant EPOCH_DURATION = 1 minutes;
     uint256 public lastEpochTimestamp;
     uint256 public lastMarketCap;
     uint256 public constant MAX_REWARD = 1000 ether;
